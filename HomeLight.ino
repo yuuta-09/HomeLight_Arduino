@@ -1,4 +1,3 @@
-
 #include "WiFiS3.h"
 #include <IRremote.hpp>
 
@@ -15,6 +14,8 @@ WiFiServer server(80);
 
 void setup() {
   Serial.begin(9600);      // initialize serial communication
+  IPAddress ip(192, 168, 0, 15);
+  WiFi.config(ip);
 
   // check for the WiFi module:
   if (WiFi.status() == WL_NO_MODULE) {
