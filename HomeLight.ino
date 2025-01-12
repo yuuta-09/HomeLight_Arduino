@@ -1,144 +1,118 @@
-#include "WiFiS3.h"
+#include <ArduinoBLE.h>
 #include <IRremote.hpp>
 
-#include "arduino_secrets.h" 
-///////please enter your sensitive data in the Secret tab/arduino_secrets.h
-char ssid[] = SECRET_SSID;        // your network SSID (name)
-char pass[] = SECRET_PASS;    // your network password (use for WPA, or use as key for WEP)
-int keyIndex = 0;                 // your network key index number (needed only for WEP)
-
-int status = WL_IDLE_STATUS;
-WiFiServer server(80);
-
+// マクロ定義
 #define IR_SEND_PIN 4
 
+// 関数プロトタイプ宣言
+void notifyError(int ledPinNum = LED_BUILTIN, int intervalTime = 1000);
+void notifySetUpSuccess(int ledPinNum = LED_BUILTIN, int loopNum = 5, int intervalTime = 100);
+void centralConnected(int ledPinNum = LED_BUILTIN);
+void centralDisconnected(int ledPinNum = LED_BUILTIN);
+
+// BLEサービスとキャラクタリスティックのUUID
+BLEService lightControlService("1815");
+BLEIntCharacteristic lightState("2A37", BLERead | BLEWrite); // 0x2A37を使用してライトの状態を送受信
+
+
 void setup() {
-  Serial.begin(9600);      // initialize serial communication
-  IPAddress ip(192, 168, 0, 15);
-  WiFi.config(ip);
+  Serial.begin(9600);
+  while (!Serial); // シリアル通信が開始されるまで待機
 
-  // check for the WiFi module:
-  if (WiFi.status() == WL_NO_MODULE) {
-    Serial.println("Communication with WiFi module failed!");
-    // don't continue
-    while (true);
+  // BLEの初期化
+  if (!BLE.begin()) {
+    notifyError();
+    while(1);
   }
 
-  String fv = WiFi.firmwareVersion();
-  if (fv < WIFI_FIRMWARE_LATEST_VERSION) {
-    Serial.println("Please upgrade the firmware");
-  }
+  // デバイス名とサービス名の設定
+  BLE.setLocalName("HomeLight");
+  lightControlService.addCharacteristic(lightState);
+  BLE.addService(lightControlService);
 
-  // attempt to connect to WiFi network:
-  while (status != WL_CONNECTED) {
-    Serial.print("Attempting to connect to Network named: ");
-    Serial.println(ssid);                   // print the network name (SSID);
-
-    // Connect to WPA/WPA2 network. Change this line if using open or WEP network:
-    status = WiFi.begin(ssid, pass);
-    // wait 10 seconds for connection:
-    delay(10000);
-  }
-  server.begin();                           // start the web server on port 80
-  printWifiStatus();                        // you're connected now, so print out the status
-
+  // 赤外線送信準備
   IrSender.begin(IR_SEND_PIN, DISABLE_LED_FEEDBACK, 0);
+
+  // セットアップ成功を通知
+  notifySetUpSuccess();
+
+  // BLEのアドバタイズ開始
+  BLE.advertise();
 }
 
 
 void loop() {
-  WiFiClient client = server.available();   // listen for incoming clients
+  BLEDevice central = BLE.central();
 
-  if (client) {                             // if you get a client,
-    Serial.println("new client");           // print a message out the serial port
-    String currentLine = "";                // make a String to hold incoming data from the client
-    while (client.connected()) {            // loop while the client's connected
-      if (client.available()) {             // if there's bytes to read from the client,
-        char c = client.read();             // read a byte, then
-        Serial.write(c);                    // print it out to the serial monitor
-        if (c == '\n') {                    // if the byte is a newline character
+  if (central) {
+    // セントラルデバイスが接続されたらLEDを点灯
+    centralConnected();
 
-          // if the current line is blank, you got two newline characters in a row.
-          // that's the end of the client HTTP request, so send a response:
-          if (currentLine.length() == 0) {
-            // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
-            // and a content-type so the client knows what's coming, then a blank line:
-            client.println("HTTP/1.1 200 OK");
-            client.println("Content-type:text/html; charset=utf-8");
-            client.println();
-
-            // the content of the HTTP response follows the header:
-            client.print("<p style=\"font-size:30px;\"><a href=\"/EPS\">電源</a><br></p>");
-            client.print("<p style=\"font-size:30px;\"><a href=\"/ALL\">全灯</a><br></p>");
-            client.print("<p style=\"font-size:30px;\"><a href=\"/night\">常夜灯</a><br></p>");
-            client.print("<p style=\"font-size:30px;\"><a href=\"/eighty\">80%</a><br></p>");
-            client.print("<p style=\"font-size:30px;\"><a href=\"/sixty\">60%</a><br></p>");
-            client.print("<p style=\"font-size:30px;\"><a href=\"/thirty\">30%</a><br></p>");
-            client.print("<p style=\"font-size:30px;\"><a href=\"/bright\">明</a><br></p>");
-            client.print("<p style=\"font-size:30px;\"><a href=\"/dark\">暗</a><br></p>");
-            
-            // The HTTP response ends with another blank line:
-            client.println();
-            // break out of the while loop:
+    while (central.connected()) {
+      if (lightState.written()) {
+        int value = lightState.value();
+        // 受信した値に応じて赤外線信号を送信
+        switch (value) {
+          case 0:
+            IrSender.sendNEC(0x459A, 0x4, 0);
             break;
-          } else {    // if you got a newline, then clear currentLine:
-            currentLine = "";
-          }
-        } else if (c != '\r') {  // if you got anything else but a carriage return character,
-          currentLine += c;      // add it to the end of the currentLine
-        }
-
-        // Check to see if the client request was "GET /H" or "GET /L":
-        if (currentLine.endsWith("GET /EPS")) {
-          IrSender.sendNEC(0x459A, 0x4, 0);
-        }
-        if (currentLine.endsWith("GET /ALL")) {
-          IrSender.sendNEC(0x459A, 0x48, 0);
-        }
-        if (currentLine.endsWith("GET /night")) {
-          IrSender.sendNEC(0x459A, 0x88, 0);
-        }
-        if (currentLine.endsWith("GET /eighty")) {
-          IrSender.sendNEC(0x459A, 0x21, 0);
-        }
-        if (currentLine.endsWith("GET /sixty")) {
-          IrSender.sendNEC(0x459A, 0x22, 0);
-        }
-        if (currentLine.endsWith("GET /thirty")) {
-          IrSender.sendNEC(0x459A, 0x23, 0);
-        }
-        if (currentLine.endsWith("GET /bright")) {
-          IrSender.sendNEC(0x459A, 0xC4, 0);
-        }
-        if (currentLine.endsWith("GET /dark")) {
-          IrSender.sendNEC(0x459A, 0x44, 0);
+          case 1:
+            IrSender.sendNEC(0x459A, 0x48, 0);
+            break;
+          case 2:
+            IrSender.sendNEC(0x459A, 0x88, 0);
+            break;
+          case 3:
+            IrSender.sendNEC(0x459A, 0x21, 0);
+            break;
+          case 4:
+            IrSender.sendNEC(0x459A, 0x22, 0);
+            break;
+          case 5:
+            IrSender.sendNEC(0x459A, 0x23, 0);
+            break;
+          case 6:
+            IrSender.sendNEC(0x459A, 0xC4, 0);
+            break;
+          case 7:
+            IrSender.sendNEC(0x459A, 0x44, 0);
+            break;
+          default:
+            break;
         }
       }
-      
     }
-    // close the connection:
-    client.stop();
-    Serial.println("client disconnected");
+
+    centralDisconnected();
   }
 }
 
-void printWifiStatus() {
-  // print the SSID of the network you're attached to:
-  Serial.print("SSID: ");
-  Serial.println(WiFi.SSID());
-
-  // print your board's IP address:
-  IPAddress ip = WiFi.localIP();
-  Serial.print("IP Address: ");
-  Serial.println(ip);
-
-  // print the received signal strength:
-  long rssi = WiFi.RSSI();
-  Serial.print("signal strength (RSSI):");
-  Serial.print(rssi);
-  Serial.println(" dBm");
-  // print where to go in a browser:
-  Serial.print("To see this page in action, open a browser to http://");
-  Serial.println(ip);
+void notifyError(int ledPinNum, int intervalTime) {
+  // ArduinoのLEDを点滅させる
+  while (true) {
+    digitalWrite(ledPinNum, HIGH);
+    delay(intervalTime);
+    digitalWrite(ledPinNum, LOW);
+    delay(intervalTime);
+  }
 }
 
+void notifySetUpSuccess(int ledPinNum, int loopNum, int intervalTime) {
+  // ArduinoのLEDを5回点滅させる
+  for (int i = 0; i < loopNum; i++) {
+    digitalWrite(ledPinNum, HIGH);
+    delay(intervalTime);
+    digitalWrite(ledPinNum, LOW);
+    delay(intervalTime);
+  }
+}
+
+void centralConnected(int ledPinNum) {
+  // ArduinoのLEDを点灯させる
+  digitalWrite(ledPinNum, HIGH);
+}
+
+void centralDisconnected(int ledPinNum) {
+  // ArduinoのLEDを消灯させる
+  digitalWrite(ledPinNum, LOW);
+}
